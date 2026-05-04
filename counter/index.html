@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#101418" />
+    <meta name="description" content="Camera-based object counter with lasso and exclusion regions." />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>Object Counter</title>
+  </head>
+  <body>
+    <main class="app-shell" aria-label="Object counter camera app">
+      <video id="camera" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+
+      <section id="statusPanel" class="status-panel" aria-live="polite">
+        <div id="countBadge" class="count-badge">
+          <span id="liveCount">0</span>
+          <small>count</small>
+        </div>
+        <div id="modelStatus" class="model-status">Loading model...</div>
+      </section>
+
+      <section id="messagePanel" class="message-panel" hidden>
+        <h1 id="messageTitle">Camera unavailable</h1>
+        <p id="messageText"></p>
+        <button id="retryButton" type="button">Retry</button>
+      </section>
+
+      <nav class="toolbar" aria-label="Object counting tools">
+        <button id="lassoButton" class="tool-button" type="button" aria-pressed="false" title="Draw lasso region">
+          <span class="icon">L</span>
+          <span>Lasso</span>
+        </button>
+        <button id="excludeButton" class="tool-button" type="button" aria-pressed="false" title="Draw exclusion region">
+          <span class="icon">X</span>
+          <span>Exclude</span>
+        </button>
+        <button id="closeButton" class="tool-button" type="button" disabled title="Close current polygon">
+          <span class="icon">C</span>
+          <span>Close</span>
+        </button>
+        <button id="undoButton" class="tool-button" type="button" title="Undo last region">
+          <span class="icon">U</span>
+          <span>Undo</span>
+        </button>
+        <button id="resetButton" class="tool-button" type="button" title="Reset regions">
+          <span class="icon">R</span>
+          <span>Reset</span>
+        </button>
+        <button id="captureButton" class="capture-button" type="button" title="Capture numbered image">
+          <span class="icon">O</span>
+          <span>Capture</span>
+        </button>
+      </nav>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

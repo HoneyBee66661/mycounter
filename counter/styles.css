@@ -1,0 +1,197 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #101418;
+  color: #f6f8f7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: hidden;
+  touch-action: none;
+}
+
+button {
+  font: inherit;
+}
+
+.app-shell {
+  position: fixed;
+  inset: 0;
+  min-height: 100svh;
+  overflow: hidden;
+  background: #101418;
+}
+
+#camera,
+#overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#camera {
+  object-fit: cover;
+  background: #101418;
+}
+
+#overlay {
+  z-index: 2;
+  touch-action: none;
+}
+
+.status-panel {
+  position: fixed;
+  z-index: 4;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.count-badge,
+.model-status {
+  border: 1px solid rgb(255 255 255 / 0.18);
+  background: rgb(14 18 22 / 0.72);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 0.28);
+  backdrop-filter: blur(14px);
+}
+
+.count-badge {
+  min-width: 92px;
+  padding: 9px 12px;
+  text-align: right;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.count-badge span {
+  display: block;
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 800;
+  color: #47f08b;
+}
+
+.count-badge small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  color: rgb(246 248 247 / 0.72);
+}
+
+.model-status {
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: rgb(246 248 247 / 0.86);
+}
+
+.toolbar {
+  position: fixed;
+  z-index: 5;
+  left: max(10px, env(safe-area-inset-left));
+  right: max(10px, env(safe-area-inset-right));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgb(255 255 255 / 0.16);
+  background: rgb(14 18 22 / 0.78);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.36);
+  backdrop-filter: blur(18px);
+}
+
+.tool-button,
+.capture-button,
+.message-panel button {
+  min-height: 50px;
+  border: 1px solid rgb(255 255 255 / 0.16);
+  background: rgb(255 255 255 / 0.08);
+  color: #f6f8f7;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tool-button,
+.capture-button {
+  display: grid;
+  place-items: center;
+  gap: 2px;
+  padding: 6px 4px;
+  font-size: clamp(10px, 2.6vw, 12px);
+}
+
+.tool-button[aria-pressed="true"] {
+  border-color: rgb(71 240 139 / 0.82);
+  background: rgb(71 240 139 / 0.18);
+}
+
+.tool-button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.capture-button {
+  border-color: rgb(255 202 87 / 0.7);
+  background: rgb(255 202 87 / 0.18);
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.message-panel {
+  position: fixed;
+  z-index: 8;
+  inset: auto 16px 108px 16px;
+  margin: auto;
+  max-width: 520px;
+  padding: 18px;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  background: rgb(14 18 22 / 0.88);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.42);
+  backdrop-filter: blur(18px);
+}
+
+.message-panel h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.message-panel p {
+  margin: 0 0 14px;
+  color: rgb(246 248 247 / 0.78);
+}
+
+.message-panel button {
+  width: 100%;
+}
+
+@media (min-width: 760px) {
+  .toolbar {
+    left: 50%;
+    right: auto;
+    width: min(720px, calc(100vw - 24px));
+    transform: translateX(-50%);
+  }
+}

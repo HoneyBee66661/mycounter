@@ -1,0 +1,11 @@
+{
+  "name": "Object Counter",
+  "short_name": "Counter",
+  "description": "Camera object counter with lasso and exclusion regions.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#101418",
+  "theme_color": "#101418",
+  "orientation": "portrait",
+  "icons": []
+}
