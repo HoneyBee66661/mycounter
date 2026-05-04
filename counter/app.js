@@ -3,6 +3,11 @@ const TRACK_TTL_MS = 1100;
 const IOU_THRESHOLD = 0.24;
 const SCORE_THRESHOLD = 0.52;
 const FIRST_POINT_CLOSE_DISTANCE = 22;
+const DRAW_POINT_MIN_DISTANCE = 7;
+const POLYGON_SIMPLIFY_DISTANCE = 5;
+const DETECTION_TICK_MS = 24;
+const SMOOTHING_ALPHA = 0.66;
+const DEFAULT_MODE = "default";
 
 const els = {
   video: document.querySelector("#camera"),
@@ -23,6 +28,10 @@ const els = {
 
 const ctx = els.canvas.getContext("2d");
 
+if (!ctx) {
+  throw new Error("Canvas 2D context is unavailable in this browser.");
+}
+
 const state = {
   model: null,
   stream: null,
@@ -33,7 +42,7 @@ const state = {
   nextTrackId: 1,
   tracks: [],
   countedTracks: [],
-  mode: "default",
+  mode: DEFAULT_MODE,
   lassoPolygons: [],
   excludePolygons: [],
   drawing: null,
@@ -52,6 +61,11 @@ function showMessage(title, text) {
 
 function hideMessage() {
   els.messagePanel.hidden = true;
+}
+
+function refreshCountedTracks() {
+  state.countedTracks = state.tracks.filter(isCountedTrack);
+  els.liveCount.textContent = String(state.countedTracks.length);
 }
 
 async function boot() {
@@ -114,6 +128,7 @@ function stopCamera() {
   if (state.stream) {
     state.stream.getTracks().forEach((track) => track.stop());
   }
+  els.video.srcObject = null;
   state.stream = null;
 }
 
@@ -141,7 +156,7 @@ async function detectionLoop() {
     }
   }
 
-  setTimeout(detectionLoop, 24);
+  setTimeout(detectionLoop, DETECTION_TICK_MS);
 }
 
 function updateTracks(predictions, now) {
@@ -154,18 +169,18 @@ function updateTracks(predictions, now) {
       matched: false,
     }));
 
-  state.tracks.forEach((track) => {
+  for (const track of state.tracks) {
     let bestDetection = null;
     let bestIou = 0;
 
-    detections.forEach((detection) => {
-      if (detection.matched) return;
+    for (const detection of detections) {
+      if (detection.matched) continue;
       const overlap = iou(track.bbox, detection.bbox);
       if (overlap > bestIou) {
         bestIou = overlap;
         bestDetection = detection;
       }
-    });
+    }
 
     if (bestDetection && bestIou >= IOU_THRESHOLD) {
       track.bbox = smoothBbox(track.bbox, bestDetection.bbox);
@@ -174,11 +189,10 @@ function updateTracks(predictions, now) {
       track.updatedAt = now;
       bestDetection.matched = true;
     }
-  });
+  }
 
-  detections
-    .filter((detection) => !detection.matched)
-    .forEach((detection) => {
+  for (const detection of detections) {
+    if (!detection.matched) {
       state.tracks.push({
         id: state.nextTrackId++,
         bbox: detection.bbox,
@@ -186,16 +200,15 @@ function updateTracks(predictions, now) {
         score: detection.score,
         updatedAt: now,
       });
-    });
+    }
+  }
 
   state.tracks = state.tracks.filter((track) => now - track.updatedAt <= TRACK_TTL_MS);
-  state.countedTracks = state.tracks.filter(isCountedTrack);
-  els.liveCount.textContent = String(state.countedTracks.length);
+  refreshCountedTracks();
 }
 
 function smoothBbox(previous, next) {
-  const alpha = 0.66;
-  return previous.map((value, index) => value * alpha + next[index] * (1 - alpha));
+  return previous.map((value, index) => value * SMOOTHING_ALPHA + next[index] * (1 - SMOOTHING_ALPHA));
 }
 
 function iou(a, b) {
@@ -373,7 +386,7 @@ function videoBboxToCanvas(bbox) {
 }
 
 function setMode(mode) {
-  state.mode = state.mode === mode ? "default" : mode;
+  state.mode = state.mode === mode ? DEFAULT_MODE : mode;
   state.drawing = null;
   updateButtons();
 }
@@ -393,7 +406,7 @@ function beginDrawing(point) {
 function addDrawingPoint(point) {
   if (!state.drawing) return;
   const last = state.drawing.lastPoint;
-  if (distance(last, point) < 7) return;
+  if (distance(last, point) < DRAW_POINT_MIN_DISTANCE) return;
   state.drawing.points.push(point);
   state.drawing.lastPoint = point;
 
@@ -419,6 +432,7 @@ function closeDrawing() {
     navigator.vibrate?.(18);
   }
   state.drawing = null;
+  refreshCountedTracks();
   updateButtons();
 }
 
@@ -426,7 +440,7 @@ function simplifyPolygon(points) {
   const simplified = [];
   points.forEach((point) => {
     const last = simplified[simplified.length - 1];
-    if (!last || distance(last, point) >= 5) simplified.push(point);
+    if (!last || distance(last, point) >= POLYGON_SIMPLIFY_DISTANCE) simplified.push(point);
   });
   return simplified;
 }
@@ -440,14 +454,16 @@ function undoLastPolygon() {
   } else if (state.excludePolygons.length) {
     state.excludePolygons.pop();
   }
+  refreshCountedTracks();
   updateButtons();
 }
 
 function resetRegions() {
-  state.mode = "default";
+  state.mode = DEFAULT_MODE;
   state.drawing = null;
   state.lassoPolygons = [];
   state.excludePolygons = [];
+  refreshCountedTracks();
   updateButtons();
 }
 
@@ -479,7 +495,8 @@ function pointerUp(event) {
 }
 
 async function captureImage() {
-  if (!els.video.videoWidth || !state.countedTracks.length && els.video.readyState < 2) return;
+  const videoReady = els.video.videoWidth > 0 && els.video.videoHeight > 0 && els.video.readyState >= 2;
+  if (!videoReady || state.countedTracks.length === 0) return;
   state.capturePaused = true;
 
   const canvas = document.createElement("canvas");
@@ -548,22 +565,26 @@ function downloadCanvas(canvas) {
   link.click();
 }
 
-els.lassoButton.addEventListener("click", () => setMode("lasso"));
-els.excludeButton.addEventListener("click", () => setMode("exclude"));
-els.closeButton.addEventListener("click", closeDrawing);
-els.undoButton.addEventListener("click", undoLastPolygon);
-els.resetButton.addEventListener("click", resetRegions);
-els.captureButton.addEventListener("click", captureImage);
-els.retryButton.addEventListener("click", boot);
-els.canvas.addEventListener("pointerdown", pointerDown);
-els.canvas.addEventListener("pointermove", pointerMove);
-els.canvas.addEventListener("pointerup", pointerUp);
-els.canvas.addEventListener("pointercancel", () => {
+function handlePointerCancel() {
   state.drawing = null;
   updateButtons();
-});
-window.addEventListener("resize", resizeCanvas);
-window.addEventListener("beforeunload", stopCamera);
+}
+
+function bindEvents() {
+  els.lassoButton.addEventListener("click", () => setMode("lasso"));
+  els.excludeButton.addEventListener("click", () => setMode("exclude"));
+  els.closeButton.addEventListener("click", closeDrawing);
+  els.undoButton.addEventListener("click", undoLastPolygon);
+  els.resetButton.addEventListener("click", resetRegions);
+  els.captureButton.addEventListener("click", captureImage);
+  els.retryButton.addEventListener("click", boot);
+  els.canvas.addEventListener("pointerdown", pointerDown);
+  els.canvas.addEventListener("pointermove", pointerMove);
+  els.canvas.addEventListener("pointerup", pointerUp);
+  els.canvas.addEventListener("pointercancel", handlePointerCancel);
+  window.addEventListener("resize", resizeCanvas);
+  window.addEventListener("beforeunload", stopCamera);
+}
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -571,4 +592,5 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+bindEvents();
 boot();
