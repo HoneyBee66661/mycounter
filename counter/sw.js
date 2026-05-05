@@ -1,4 +1,4 @@
-const CACHE_NAME = "object-counter-v4";
+const CACHE_NAME = "object-counter-v5";
 const APP_SHELL = [
   "./",
   "./index.html",

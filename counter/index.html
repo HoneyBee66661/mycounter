@@ -28,27 +28,41 @@
         <button id="retryButton" type="button">Retry</button>
       </section>
 
+      <div id="focusBar" class="focus-bar" hidden>
+        <button id="focusContinuous" class="focus-chip" type="button" data-mode="continuous">AF-C</button>
+        <button id="focusSingle" class="focus-chip" type="button" data-mode="single-shot">AF-S</button>
+        <button id="focusManual" class="focus-chip" type="button" data-mode="manual">MF</button>
+        <input type="range" id="focusSlider" class="focus-slider" min="0" max="1" step="0.01" value="0.5" hidden>
+      </div>
+
       <nav class="toolbar" aria-label="Camera controls">
         <button id="lassoButton" class="tool-button" type="button" aria-pressed="false" title="Lasso tool">
           <span class="icon">L</span>
+          <span class="tool-label">Lasso</span>
         </button>
         <button id="excludeButton" class="tool-button" type="button" aria-pressed="false" title="Exclude tool">
           <span class="icon">X</span>
+          <span class="tool-label">Exclude</span>
         </button>
         <button id="galleryButton" class="tool-button" type="button" title="View gallery">
           <span class="icon">G</span>
+          <span class="tool-label">Gallery</span>
         </button>
         <button id="flipButton" class="tool-button" type="button" title="Flip camera">
           <span class="icon">F</span>
+          <span class="tool-label">Flip</span>
         </button>
-        <button id="resetButton" class="tool-button" type="button" title="Reset">
+        <button id="resetButton" class="tool-button" type="button" title="Reset regions">
           <span class="icon">R</span>
+          <span class="tool-label">Reset</span>
         </button>
       </nav>
 
       <button id="shutterButton" class="shutter-button" type="button" title="Take photo">
         <span class="shutter-inner"></span>
       </button>
+
+      <div id="shutterFlash" class="shutter-flash" hidden></div>
 
       <section id="galleryModal" class="gallery-modal" hidden>
         <div class="gallery-header">

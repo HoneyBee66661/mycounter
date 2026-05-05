@@ -1,11 +1,11 @@
 const DETECTION_INTERVAL_MS = 210;
 const TRACK_TTL_MS = 1100;
 const IOU_THRESHOLD = 0.24;
-const SCORE_THRESHOLD = 0.52;
-const SCORE_THRESHOLD_CAPTURE = 0.35;
+const SCORE_THRESHOLD = 0.25;
+const SCORE_THRESHOLD_CAPTURE = 0.2;
 const IOU_THRESHOLD_CAPTURE = 0.35;
-const CAPTURE_PASSES = 4;
-const CAPTURE_ENSEMBLE_MIN_RATIO = 0.5;
+const CAPTURE_PASSES = 3;
+const CAPTURE_ENSEMBLE_MIN_RATIO = 0.33;
 const FIRST_POINT_CLOSE_DISTANCE = 22;
 const DRAW_POINT_MIN_DISTANCE = 7;
 const POLYGON_SIMPLIFY_DISTANCE = 5;
@@ -30,6 +30,12 @@ const els = {
   galleryModal: document.querySelector("#galleryModal"),
   closeGallery: document.querySelector("#closeGallery"),
   galleryGrid: document.querySelector("#galleryGrid"),
+  focusBar: document.querySelector("#focusBar"),
+  focusContinuous: document.querySelector("#focusContinuous"),
+  focusSingle: document.querySelector("#focusSingle"),
+  focusManual: document.querySelector("#focusManual"),
+  focusSlider: document.querySelector("#focusSlider"),
+  shutterFlash: document.querySelector("#shutterFlash"),
 };
 
 const ctx = els.canvas.getContext("2d");
@@ -55,6 +61,10 @@ const state = {
   videoRect: { x: 0, y: 0, width: 1, height: 1, scaleX: 1, scaleY: 1 },
   facingMode: "environment",
   db: null,
+  focusCaps: [],
+  focusMode: null,
+  focusDistance: 0.5,
+  focusAnimation: null,
 };
 
 function setStatus(text) {
@@ -174,6 +184,7 @@ async function startCamera() {
   els.video.srcObject = state.stream;
   await els.video.play();
   resizeCanvas();
+  detectFocusCaps();
 }
 
 async function flipCamera() {
@@ -192,6 +203,55 @@ function stopCamera() {
   }
   els.video.srcObject = null;
   state.stream = null;
+}
+
+function detectFocusCaps() {
+  if (!state.stream) return;
+  const track = state.stream.getVideoTracks()[0];
+  const caps = track.getCapabilities?.();
+  state.focusCaps = caps?.focusMode || [];
+  els.focusBar.hidden = state.focusCaps.length === 0;
+  if (state.focusCaps.length > 0) {
+    setFocusMode(state.focusCaps.includes("continuous") ? "continuous" : state.focusCaps[0]);
+  }
+}
+
+function setFocusMode(mode) {
+  if (!state.stream || !state.focusCaps.includes(mode)) return;
+  state.focusMode = mode;
+  els.focusContinuous.setAttribute("aria-pressed", String(mode === "continuous"));
+  els.focusSingle.setAttribute("aria-pressed", String(mode === "single-shot"));
+  els.focusManual.setAttribute("aria-pressed", String(mode === "manual"));
+  els.focusSlider.hidden = mode !== "manual";
+  if (mode === "manual") {
+    els.focusSlider.value = state.focusDistance;
+  }
+  try {
+    state.stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusMode: mode }] });
+  } catch (e) { /* unsupported */ }
+}
+
+function setFocusDistance(value) {
+  state.focusDistance = value;
+  try {
+    state.stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusDistance: value }] });
+  } catch (e) { /* unsupported */ }
+}
+
+function triggerFocusAnimation(x, y) {
+  const rect = els.canvas.getBoundingClientRect();
+  state.focusAnimation = {
+    x: x - rect.left,
+    y: y - rect.top,
+    startTime: performance.now(),
+    duration: 800,
+  };
+  navigator.vibrate?.(10);
+  if (state.focusMode === "single-shot" || state.focusMode === "continuous") {
+    try {
+      state.stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusMode: state.focusMode }] });
+    } catch (e) { /* unsupported */ }
+  }
 }
 
 async function detectionLoop() {
@@ -224,38 +284,134 @@ async function detectionLoop() {
 
 // Note: coco-ssd's detect() method handles tensor disposal internally via tf.tidy()
 
-async function detectInFrame(canvas) {
-  if (!state.model) return [];
-  const allDetections = [];
+function detectContours(canvas) {
+  const srcCtx = canvas.getContext("2d");
+  const srcW = canvas.width;
+  const srcH = canvas.height;
+  const scale = Math.min(320 / srcW, 240 / srcH);
+  const w = Math.round(srcW * scale);
+  const h = Math.round(srcH * scale);
 
-  for (let i = 0; i < CAPTURE_PASSES; i++) {
-    try {
-      const predictions = await state.model.detect(canvas);
-      predictions
-        .filter((p) => p.score >= SCORE_THRESHOLD_CAPTURE)
-        .forEach((p) => allDetections.push({ bbox: p.bbox, score: p.score }));
-    } catch (error) {
-      console.error("Capture detection pass failed:", error);
+  const offscreen = document.createElement("canvas");
+  offscreen.width = w;
+  offscreen.height = h;
+  const ctx = offscreen.getContext("2d");
+  ctx.drawImage(canvas, 0, 0, w, h);
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const pixels = imageData.data;
+
+  const gray = new Uint8Array(w * h);
+  let total = 0;
+  for (let i = 0; i < w * h; i++) {
+    const p = i * 4;
+    gray[i] = (pixels[p] * 77 + pixels[p + 1] * 150 + pixels[p + 2] * 29) >> 8;
+    total += gray[i];
+  }
+  const mean = total / (w * h);
+  const binary = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    binary[i] = Math.abs(gray[i] - mean) > 30 ? 255 : 0;
+  }
+
+  const label = new Int32Array(w * h).fill(-1);
+  const boxes = [];
+  let nextLabel = 0;
+
+  for (let i = 0; i < w * h; i++) {
+    if (binary[i] !== 255 || label[i] !== -1) continue;
+    const stack = [i];
+    label[i] = nextLabel;
+    let minX = i % w, maxX = minX, minY = Math.floor(i / w), maxY = minY;
+    while (stack.length) {
+      const idx = stack.pop();
+      const cx = idx % w, cy = (idx / w) | 0;
+      if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+      if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+      for (const n of [
+        cy * w + (cx - 1), cy * w + (cx + 1),
+        (cy - 1) * w + cx, (cy + 1) * w + cx
+      ]) {
+        if (n >= 0 && n < w * h && binary[n] === 255 && label[n] === -1) {
+          label[n] = nextLabel; stack.push(n);
+        }
+      }
+    }
+    boxes.push({ minX, maxX, minY, maxY });
+    nextLabel++;
+  }
+
+  const imgArea = w * h;
+  const minArea = imgArea * 0.015;
+  const maxArea = imgArea * 0.85;
+  const minDim = Math.min(w, h) * 0.04;
+
+  return boxes
+    .filter((b) => {
+      const bw = b.maxX - b.minX, bh = b.maxY - b.minY;
+      return bw * bh >= minArea && bw * bh <= maxArea && bw >= minDim && bh >= minDim;
+    })
+    .map((b) => ({
+      bbox: [
+        Math.round(b.minX / scale),
+        Math.round(b.minY / scale),
+        Math.round((b.maxX - b.minX) / scale),
+        Math.round((b.maxY - b.minY) / scale),
+      ],
+      score: 0.5,
+    }));
+}
+
+async function detectInFrame(canvas) {
+  const detections = [];
+
+  if (state.model) {
+    const allDetections = [];
+    for (let i = 0; i < CAPTURE_PASSES; i++) {
+      try {
+        const predictions = await state.model.detect(canvas);
+        predictions
+          .filter((p) => p.score >= SCORE_THRESHOLD_CAPTURE)
+          .forEach((p) => allDetections.push({ bbox: p.bbox, score: p.score }));
+      } catch (error) {
+        console.error("Capture detection pass failed:", error);
+      }
+    }
+
+    if (allDetections.length > 0) {
+      const clusters = clusterDetections(allDetections);
+      const minPasses = Math.ceil(CAPTURE_PASSES * CAPTURE_ENSEMBLE_MIN_RATIO);
+      for (const det of clusters
+        .filter((c) => c.count >= minPasses)
+        .map((c) => ({
+          bbox: [
+            c.bboxes.reduce((s, b) => s + b[0], 0) / c.bboxes.length,
+            c.bboxes.reduce((s, b) => s + b[1], 0) / c.bboxes.length,
+            c.bboxes.reduce((s, b) => s + b[2], 0) / c.bboxes.length,
+            c.bboxes.reduce((s, b) => s + b[3], 0) / c.bboxes.length,
+          ],
+          score: c.scores.reduce((a, b) => a + b, 0) / c.scores.length,
+        }))
+      ) {
+        detections.push(det);
+      }
     }
   }
 
-  if (allDetections.length === 0) return [];
+  try {
+    const contourBoxes = detectContours(canvas);
+    for (const cbox of contourBoxes) {
+      let overlap = false;
+      for (const existing of detections) {
+        if (iou(existing.bbox, cbox.bbox) > IOU_THRESHOLD_CAPTURE) {
+          overlap = true;
+          break;
+        }
+      }
+      if (!overlap) detections.push(cbox);
+    }
+  } catch (e) { /* contour fallback */ }
 
-  const clusters = clusterDetections(allDetections);
-  const minPasses = Math.ceil(CAPTURE_PASSES * CAPTURE_ENSEMBLE_MIN_RATIO);
-
-  return clusters
-    .filter((c) => c.count >= minPasses)
-    .map((c) => ({
-      bbox: [
-        c.bboxes.reduce((s, b) => s + b[0], 0) / c.bboxes.length,
-        c.bboxes.reduce((s, b) => s + b[1], 0) / c.bboxes.length,
-        c.bboxes.reduce((s, b) => s + b[2], 0) / c.bboxes.length,
-        c.bboxes.reduce((s, b) => s + b[3], 0) / c.bboxes.length,
-      ],
-      score: c.scores.reduce((a, b) => a + b, 0) / c.scores.length,
-    }))
-    .sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
+  return detections.sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
 }
 
 function clusterDetections(detections) {
@@ -431,6 +587,36 @@ function drawOverlay() {
   }
 
   state.countedTracks.forEach((track) => drawTrack(track));
+
+  drawFocusAnimation();
+}
+
+function drawFocusAnimation() {
+  const anim = state.focusAnimation;
+  if (!anim) return;
+  const elapsed = performance.now() - anim.startTime;
+  if (elapsed >= anim.duration) {
+    state.focusAnimation = null;
+    return;
+  }
+  const t = elapsed / anim.duration;
+  const size = 40 + (1 - t) * 40;
+  const alpha = Math.max(0, 1 - t * 1.5);
+  ctx.save();
+  ctx.translate(anim.x, anim.y);
+  ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+  ctx.lineWidth = 2 + (1 - t) * 2;
+  const gap = 6;
+  const half = size / 2;
+  // top-left
+  ctx.beginPath(); ctx.moveTo(-half, -half + gap); ctx.lineTo(-half, -half); ctx.lineTo(-half + gap, -half); ctx.stroke();
+  // top-right
+  ctx.beginPath(); ctx.moveTo(half - gap, -half); ctx.lineTo(half, -half); ctx.lineTo(half, -half + gap); ctx.stroke();
+  // bottom-left
+  ctx.beginPath(); ctx.moveTo(-half, half - gap); ctx.lineTo(-half, half); ctx.lineTo(-half + gap, half); ctx.stroke();
+  // bottom-right
+  ctx.beginPath(); ctx.moveTo(half - gap, half); ctx.lineTo(half, half); ctx.lineTo(half, half - gap); ctx.stroke();
+  ctx.restore();
 }
 
 function drawPolygons(polygons, stroke, fill) {
@@ -607,7 +793,10 @@ function clamp(value, min, max) {
 }
 
 function pointerDown(event) {
-  if (state.mode !== "lasso" && state.mode !== "exclude") return;
+  if (state.mode !== "lasso" && state.mode !== "exclude") {
+    triggerFocusAnimation(event.clientX, event.clientY);
+    return;
+  }
   event.preventDefault();
   els.canvas.setPointerCapture?.(event.pointerId);
   beginDrawing(canvasToVideoPoint(event));
@@ -630,6 +819,8 @@ async function captureImage() {
   if (!videoReady) return;
   state.capturePaused = true;
   setStatus("Analyzing...");
+  els.shutterButton.classList.add("processing");
+  navigator.vibrate?.([15, 25, 35]);
 
   const canvas = document.createElement("canvas");
   canvas.width = els.video.videoWidth;
@@ -646,7 +837,17 @@ async function captureImage() {
   const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
   await saveCapture(dataUrl);
   downloadCanvas(canvas);
-  navigator.vibrate?.([20, 30, 20]);
+
+  els.shutterFlash.hidden = false;
+  els.shutterFlash.className = "shutter-flash active";
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      els.shutterFlash.className = "shutter-flash fade";
+      setTimeout(() => { els.shutterFlash.hidden = true; }, 350);
+    });
+  });
+
+  els.shutterButton.classList.remove("processing");
   setStatus("Detecting objects");
   state.capturePaused = false;
 }
@@ -749,6 +950,10 @@ function bindEvents() {
   els.closeGallery.addEventListener("click", closeGalleryModal);
   els.resetButton.addEventListener("click", resetRegions);
   els.retryButton.addEventListener("click", boot);
+  els.focusContinuous.addEventListener("click", () => setFocusMode("continuous"));
+  els.focusSingle.addEventListener("click", () => setFocusMode("single-shot"));
+  els.focusManual.addEventListener("click", () => setFocusMode("manual"));
+  els.focusSlider.addEventListener("input", (e) => setFocusDistance(parseFloat(e.target.value)));
   els.canvas.addEventListener("pointerdown", pointerDown);
   els.canvas.addEventListener("pointermove", pointerMove);
   els.canvas.addEventListener("pointerup", pointerUp);
