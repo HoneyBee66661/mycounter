@@ -28,36 +28,39 @@
         <button id="retryButton" type="button">Retry</button>
       </section>
 
-      <nav class="toolbar" aria-label="Object counting tools">
-        <button id="lassoButton" class="tool-button" type="button" aria-pressed="false" title="Draw lasso region">
+      <nav class="toolbar" aria-label="Camera controls">
+        <button id="lassoButton" class="tool-button" type="button" aria-pressed="false" title="Lasso tool">
           <span class="icon">L</span>
-          <span>Lasso</span>
         </button>
-        <button id="excludeButton" class="tool-button" type="button" aria-pressed="false" title="Draw exclusion region">
+        <button id="excludeButton" class="tool-button" type="button" aria-pressed="false" title="Exclude tool">
           <span class="icon">X</span>
-          <span>Exclude</span>
         </button>
-        <button id="closeButton" class="tool-button" type="button" disabled title="Close current polygon">
-          <span class="icon">C</span>
-          <span>Close</span>
+        <button id="galleryButton" class="tool-button" type="button" title="View gallery">
+          <span class="icon">G</span>
         </button>
-        <button id="undoButton" class="tool-button" type="button" title="Undo last region">
-          <span class="icon">U</span>
-          <span>Undo</span>
+        <button id="flipButton" class="tool-button" type="button" title="Flip camera">
+          <span class="icon">F</span>
         </button>
-        <button id="resetButton" class="tool-button" type="button" title="Reset regions">
+        <button id="resetButton" class="tool-button" type="button" title="Reset">
           <span class="icon">R</span>
-          <span>Reset</span>
-        </button>
-        <button id="captureButton" class="capture-button" type="button" title="Capture numbered image">
-          <span class="icon">O</span>
-          <span>Capture</span>
         </button>
       </nav>
+
+      <button id="shutterButton" class="shutter-button" type="button" title="Take photo">
+        <span class="shutter-inner"></span>
+      </button>
+
+      <section id="galleryModal" class="gallery-modal" hidden>
+        <div class="gallery-header">
+          <span>Gallery</span>
+          <button id="closeGallery" type="button">X</button>
+        </div>
+        <div id="galleryGrid" class="gallery-grid"></div>
+      </section>
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
-    <script src="./app.js" type="module"></script>
+    <script src="./app.js"></script>
   </body>
 </html>

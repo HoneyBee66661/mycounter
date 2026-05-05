@@ -2,10 +2,13 @@ const DETECTION_INTERVAL_MS = 210;
 const TRACK_TTL_MS = 1100;
 const IOU_THRESHOLD = 0.24;
 const SCORE_THRESHOLD = 0.52;
+const SCORE_THRESHOLD_CAPTURE = 0.35;
+const IOU_THRESHOLD_CAPTURE = 0.35;
+const CAPTURE_PASSES = 4;
+const CAPTURE_ENSEMBLE_MIN_RATIO = 0.5;
 const FIRST_POINT_CLOSE_DISTANCE = 22;
 const DRAW_POINT_MIN_DISTANCE = 7;
 const POLYGON_SIMPLIFY_DISTANCE = 5;
-const DETECTION_TICK_MS = 24;
 const SMOOTHING_ALPHA = 0.66;
 const DEFAULT_MODE = "default";
 
@@ -20,10 +23,13 @@ const els = {
   retryButton: document.querySelector("#retryButton"),
   lassoButton: document.querySelector("#lassoButton"),
   excludeButton: document.querySelector("#excludeButton"),
-  closeButton: document.querySelector("#closeButton"),
-  undoButton: document.querySelector("#undoButton"),
+  galleryButton: document.querySelector("#galleryButton"),
+  shutterButton: document.querySelector("#shutterButton"),
+  flipButton: document.querySelector("#flipButton"),
   resetButton: document.querySelector("#resetButton"),
-  captureButton: document.querySelector("#captureButton"),
+  galleryModal: document.querySelector("#galleryModal"),
+  closeGallery: document.querySelector("#closeGallery"),
+  galleryGrid: document.querySelector("#galleryGrid"),
 };
 
 const ctx = els.canvas.getContext("2d");
@@ -47,6 +53,8 @@ const state = {
   excludePolygons: [],
   drawing: null,
   videoRect: { x: 0, y: 0, width: 1, height: 1, scaleX: 1, scaleY: 1 },
+  facingMode: "environment",
+  db: null,
 };
 
 function setStatus(text) {
@@ -78,6 +86,8 @@ async function boot() {
     return;
   }
 
+  await initDB();
+
   try {
     if (!window.tf || !window.cocoSsd) {
       throw new Error("The detection libraries did not load. Check your connection and reload.");
@@ -98,12 +108,54 @@ async function boot() {
   }
 }
 
+async function initDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("ObjectCounterDB", 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      state.db = request.result;
+      resolve();
+    };
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains("captures")) {
+        db.createObjectStore("captures", { keyPath: "id", autoIncrement: true });
+      }
+    };
+  });
+}
+
+async function saveCapture(dataUrl) {
+  if (!state.db) return;
+  const transaction = state.db.transaction(["captures"], "readwrite");
+  const store = transaction.objectStore("captures");
+  store.add({ dataUrl, timestamp: Date.now() });
+}
+
+async function getCaptures() {
+  if (!state.db) return [];
+  return new Promise((resolve) => {
+    const transaction = state.db.transaction(["captures"], "readonly");
+    const store = transaction.objectStore("captures");
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result.reverse());
+    request.onerror = () => resolve([]);
+  });
+}
+
+async function deleteCapture(id) {
+  if (!state.db) return;
+  const transaction = state.db.transaction(["captures"], "readwrite");
+  const store = transaction.objectStore("captures");
+  store.delete(id);
+}
+
 async function startCamera() {
   stopCamera();
   const constraints = {
     audio: false,
     video: {
-      facingMode: { ideal: "environment" },
+      facingMode: { ideal: state.facingMode },
       width: { ideal: 1280 },
       height: { ideal: 720 },
     },
@@ -115,13 +167,23 @@ async function startCamera() {
     throw new Error(
       error?.name === "NotAllowedError"
         ? "Camera permission was denied. Allow camera access and retry."
-        : "Could not open the rear camera on this device.",
+        : "Could not access the camera on this device.",
     );
   }
 
   els.video.srcObject = state.stream;
   await els.video.play();
   resizeCanvas();
+}
+
+async function flipCamera() {
+  state.facingMode = state.facingMode === "environment" ? "user" : "environment";
+  try {
+    await startCamera();
+  } catch (error) {
+    state.facingMode = state.facingMode === "environment" ? "user" : "environment";
+    console.error("Failed to flip camera:", error);
+  }
 }
 
 function stopCamera() {
@@ -134,29 +196,95 @@ function stopCamera() {
 
 async function detectionLoop() {
   if (!state.running) return;
-  const now = performance.now();
 
   if (
     state.model &&
     !state.detecting &&
     !state.capturePaused &&
-    els.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
-    now - state.lastDetectionAt >= DETECTION_INTERVAL_MS
+    els.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
   ) {
-    state.detecting = true;
-    state.lastDetectionAt = now;
-    try {
-      const predictions = await state.model.detect(els.video);
-      updateTracks(predictions, performance.now());
-    } catch (error) {
-      console.error(error);
-      setStatus("Detection paused");
-    } finally {
-      state.detecting = false;
+    const now = performance.now();
+    if (now - state.lastDetectionAt >= DETECTION_INTERVAL_MS) {
+      state.detecting = true;
+      state.lastDetectionAt = now;
+      try {
+        const predictions = await state.model.detect(els.video);
+        updateTracks(predictions, performance.now());
+      } catch (error) {
+        console.error(error);
+        setStatus("Detection paused");
+      } finally {
+        state.detecting = false;
+      }
     }
   }
 
-  setTimeout(detectionLoop, DETECTION_TICK_MS);
+  setTimeout(detectionLoop, DETECTION_INTERVAL_MS);
+}
+
+// Note: coco-ssd's detect() method handles tensor disposal internally via tf.tidy()
+
+async function detectInFrame(canvas) {
+  if (!state.model) return [];
+  const allDetections = [];
+
+  for (let i = 0; i < CAPTURE_PASSES; i++) {
+    try {
+      const predictions = await state.model.detect(canvas);
+      predictions
+        .filter((p) => p.score >= SCORE_THRESHOLD_CAPTURE)
+        .forEach((p) => allDetections.push({ bbox: p.bbox, score: p.score }));
+    } catch (error) {
+      console.error("Capture detection pass failed:", error);
+    }
+  }
+
+  if (allDetections.length === 0) return [];
+
+  const clusters = clusterDetections(allDetections);
+  const minPasses = Math.ceil(CAPTURE_PASSES * CAPTURE_ENSEMBLE_MIN_RATIO);
+
+  return clusters
+    .filter((c) => c.count >= minPasses)
+    .map((c) => ({
+      bbox: [
+        c.bboxes.reduce((s, b) => s + b[0], 0) / c.bboxes.length,
+        c.bboxes.reduce((s, b) => s + b[1], 0) / c.bboxes.length,
+        c.bboxes.reduce((s, b) => s + b[2], 0) / c.bboxes.length,
+        c.bboxes.reduce((s, b) => s + b[3], 0) / c.bboxes.length,
+      ],
+      score: c.scores.reduce((a, b) => a + b, 0) / c.scores.length,
+    }))
+    .sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
+}
+
+function clusterDetections(detections) {
+  const clusters = [];
+
+  for (const det of detections) {
+    let bestCluster = null;
+    let bestIou = 0;
+
+    for (const cluster of clusters) {
+      for (const cbox of cluster.bboxes) {
+        const overlap = iou(det.bbox, cbox);
+        if (overlap > bestIou) {
+          bestIou = overlap;
+          bestCluster = cluster;
+        }
+      }
+    }
+
+    if (bestCluster && bestIou >= IOU_THRESHOLD_CAPTURE) {
+      bestCluster.bboxes.push(det.bbox);
+      bestCluster.scores.push(det.score);
+      bestCluster.count++;
+    } else {
+      clusters.push({ bboxes: [det.bbox], scores: [det.score], count: 1 });
+    }
+  }
+
+  return clusters;
 }
 
 function updateTracks(predictions, now) {
@@ -394,7 +522,6 @@ function setMode(mode) {
 function updateButtons() {
   els.lassoButton.setAttribute("aria-pressed", String(state.mode === "lasso"));
   els.excludeButton.setAttribute("aria-pressed", String(state.mode === "exclude"));
-  els.closeButton.disabled = !state.drawing || state.drawing.points.length < 3;
 }
 
 function beginDrawing(point) {
@@ -446,8 +573,12 @@ function simplifyPolygon(points) {
 }
 
 function undoLastPolygon() {
-  state.drawing = null;
-  if (state.excludePolygons.length && state.mode === "exclude") {
+  if (state.drawing) {
+    state.drawing = null;
+    updateButtons();
+    return;
+  }
+  if (state.mode === "exclude" && state.excludePolygons.length) {
     state.excludePolygons.pop();
   } else if (state.lassoPolygons.length) {
     state.lassoPolygons.pop();
@@ -496,8 +627,9 @@ function pointerUp(event) {
 
 async function captureImage() {
   const videoReady = els.video.videoWidth > 0 && els.video.videoHeight > 0 && els.video.readyState >= 2;
-  if (!videoReady || state.countedTracks.length === 0) return;
+  if (!videoReady) return;
   state.capturePaused = true;
+  setStatus("Analyzing...");
 
   const canvas = document.createElement("canvas");
   canvas.width = els.video.videoWidth;
@@ -505,11 +637,49 @@ async function captureImage() {
   const captureCtx = canvas.getContext("2d");
   captureCtx.drawImage(els.video, 0, 0, canvas.width, canvas.height);
 
-  const tracks = [...state.countedTracks].sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
-  drawCaptureMarkers(captureCtx, tracks, canvas.width, canvas.height);
+  const detections = await detectInFrame(canvas);
+
+  if (detections.length > 0) {
+    drawCaptureMarkers(captureCtx, detections, canvas.width, canvas.height);
+  }
+
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  await saveCapture(dataUrl);
   downloadCanvas(canvas);
   navigator.vibrate?.([20, 30, 20]);
+  setStatus("Detecting objects");
   state.capturePaused = false;
+}
+
+async function openGallery() {
+  const captures = await getCaptures();
+  els.galleryGrid.innerHTML = "";
+  
+  if (captures.length === 0) {
+    els.galleryGrid.innerHTML = '<div class="gallery-empty">No captures yet</div>';
+  } else {
+    captures.forEach((capture) => {
+      const item = document.createElement("div");
+      item.className = "gallery-item";
+      item.innerHTML = `
+        <img src="${capture.dataUrl}" alt="Capture">
+        <button class="delete-btn" data-id="${capture.id}">X</button>
+      `;
+      item.querySelector("img").addEventListener("click", () => window.open(capture.dataUrl, "_blank"));
+      item.querySelector(".delete-btn").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await deleteCapture(capture.id);
+        item.remove();
+      });
+      els.galleryGrid.appendChild(item);
+    });
+  }
+  
+  els.galleryModal.hidden = false;
+}
+
+function closeGalleryModal() {
+  els.galleryModal.hidden = true;
 }
 
 function drawCaptureMarkers(captureCtx, tracks, width, height) {
@@ -573,10 +743,11 @@ function handlePointerCancel() {
 function bindEvents() {
   els.lassoButton.addEventListener("click", () => setMode("lasso"));
   els.excludeButton.addEventListener("click", () => setMode("exclude"));
-  els.closeButton.addEventListener("click", closeDrawing);
-  els.undoButton.addEventListener("click", undoLastPolygon);
+  els.shutterButton.addEventListener("click", captureImage);
+  els.flipButton.addEventListener("click", flipCamera);
+  els.galleryButton.addEventListener("click", openGallery);
+  els.closeGallery.addEventListener("click", closeGalleryModal);
   els.resetButton.addEventListener("click", resetRegions);
-  els.captureButton.addEventListener("click", captureImage);
   els.retryButton.addEventListener("click", boot);
   els.canvas.addEventListener("pointerdown", pointerDown);
   els.canvas.addEventListener("pointermove", pointerMove);
@@ -584,6 +755,16 @@ function bindEvents() {
   els.canvas.addEventListener("pointercancel", handlePointerCancel);
   window.addEventListener("resize", resizeCanvas);
   window.addEventListener("beforeunload", stopCamera);
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      if (state.drawing) {
+        state.drawing = null;
+        updateButtons();
+      } else if (!els.galleryModal.hidden) {
+        closeGalleryModal();
+      }
+    }
+  });
 }
 
 if ("serviceWorker" in navigator) {
